@@ -1,0 +1,507 @@
+// -----------------------------
+// USTAWIENIA EKRANU
+// -----------------------------
+const W = window.innerWidth;
+const H = window.innerHeight;
+
+// =============================
+// SCENA BOOT – GENERACJA TEKSTUR
+// =============================
+class BootScene extends Phaser.Scene {
+  constructor() { super('Boot'); }
+  preload() {
+    this.createPixelTextures();
+    this.load.image('ocean', './grafiki/water_background.png');
+    this.load.image('ship_player', './grafiki/ship_2.png');
+    this.load.image('crate', './grafiki/chest.png')
+    this.load.image('island', './grafiki/island1.png')
+  }
+  create() { this.scene.start('Game'); }
+
+  createPixelTextures() {
+    const g = this.add.graphics();
+
+    // Wrogi statek
+    g.clear();
+    g.fillStyle(0x4a2a09, 1);
+    g.fillRect(0, 12, 44, 38);
+    g.fillStyle(0x352006, 1);
+    g.fillRect(36, 20, 8, 22);
+    g.fillStyle(0xaaaaaa, 1);
+    g.fillRect(16, 8, 4, 14);
+    g.fillRect(24, 6, 4, 16);
+    g.fillRect(32, 10, 4, 12);
+    g.fillStyle(0xdedede, 1);
+    g.fillRect(20, 8, 7, 6);
+    g.fillRect(28, 6, 7, 6);
+    g.fillRect(36, 10, 5, 5);
+    g.lineStyle(2, 0x000000, 0.6); g.strokeRect(0, 12, 44, 38);
+    g.generateTexture('ship_enemy', 44, 56);
+
+    // Pocisk
+    g.clear();
+    g.fillStyle(0x333333, 1); g.fillCircle(4, 4, 4);
+    g.generateTexture('bullet', 8, 8);
+
+    // Eksplozja 0..3
+    const ex = this.add.graphics();
+    for (let i = 0; i < 4; i++) {
+      ex.clear();
+      ex.fillStyle(0xffe08a, 1); ex.fillCircle(16, 16, 4 + i * 3);
+      ex.fillStyle(0xff8a00, 1); ex.fillCircle(16, 16, 2 + i * 2);
+      ex.generateTexture('expl_' + i, 32, 32);
+    }
+    ex.destroy();
+
+    g.destroy();
+  }
+}
+
+// =============================
+// SCENA GRY
+// =============================
+class GameScene extends Phaser.Scene {
+  constructor() { super('Game'); }
+  init() {
+    this.state = {
+      score: 0,
+      gold: 0,
+      lives: 1,
+      hp: 100,
+      maxHp: 100,
+      level: 1,
+      difficultyTimer: 0,
+      timeAlive: 0,
+      shopOpen: false,
+      upgrades: { speed: 1, turn: 1, fireRate: 1, armor: 0 },
+      isInvincible: false, // NOWA: Stan nieśmiertelności
+      invincibilityDuration: 0 // NOWA: Czas trwania nieśmiertelności (w sekundach)
+    };
+  }
+
+  create() {
+    this.input.on('pointerdown', (pointer) => {
+      if (pointer.leftButtonDown()) {
+        const now = this.time.now;
+        // Zmniejszamy cooldown na podstawie ulepszeń (im większy fireRate, tym mniejszy cooldown)
+        const currentCooldown = 200 / this.state.upgrades.fireRate;
+        if (now - this.lastShotTime > currentCooldown) {
+          this.shootBullet(pointer);
+          this.lastShotTime = now;
+        }
+        this.isShooting = true;
+      }
+    });
+
+    this.input.on('pointerup', () => {
+      this.isShooting = false;
+    });
+    this.isShooting = false;    // czy LPM jest trzymany
+    this.shootCooldown = 200;   // bazowy czas (ms)
+    this.lastShotTime = 0;      // znacznik czasu ostatniego strzału
+
+    // Powtórzone nasłuchy są niepotrzebne, usunięto dla czystości.
+
+    // Włącz klawiaturę i fokus po kliknięciu
+    this.input.keyboard.enabled = true;
+    this.input.keyboard.preventDefault = true;
+    this.input.on('pointerdown', () => {
+      if (this.game && this.game.canvas) this.game.canvas.focus();
+    });
+
+    // Tło oceanu
+    this.bg = this.add.tileSprite(W / 2, H / 2, W, H, 'ocean').setScrollFactor(0);
+
+    // Grupy
+    this.crates = this.physics.add.group();
+    this.islands = this.physics.add.group({ immovable: true, allowGravity: false });
+    this.enemies = this.physics.add.group();
+    this.bullets = this.physics.add.group({ classType: Phaser.Physics.Arcade.Image });
+    this.enemyBullets = this.physics.add.group({ classType: Phaser.Physics.Arcade.Image });
+
+    // Gracz
+    this.player = this.physics.add.image(W * 0.25, H * 0.5, 'ship_player');
+    this.player.setDamping(true).setDrag(0.96).setMaxVelocity(320);
+    this.player.setCollideWorldBounds(true);
+    this.player.body.setSize(this.player.width * 0.9, this.player.height * 0.6, true);
+
+    // Sterowanie
+    this.cursors = this.input.keyboard.createCursorKeys();
+    this.wasds = this.input.keyboard.addKeys({
+      up: 'W', down: 'S', left: 'A', right: 'D'
+    });
+    this.keyShop = this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.U);
+    this.keyRestart = this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.R);
+
+    // Kolizje
+    this.physics.add.overlap(this.player, this.crates, this.collectCrate, null, this);
+    this.physics.add.collider(this.player, this.islands, () => this.hurt(12), null, this);
+    this.physics.add.overlap(this.bullets, this.enemies, this.hitEnemy, null, this);
+    this.physics.add.overlap(this.enemyBullets, this.player, () => this.hurt(10), null, this);
+    this.physics.add.collider(this.player, this.enemies, () => this.hurt(18), null, this);
+
+    // Spawnery
+    this.time.addEvent({ delay: 1200, loop: true, callback: this.spawnCrate, callbackScope: this });
+    this.time.addEvent({ delay: 1800, loop: true, callback: this.spawnIsland, callbackScope: this });
+    this.enemyEvent = this.time.addEvent({ delay: 1500, loop: true, callback: this.spawnEnemy, callbackScope: this });
+
+    // Timery
+    this.lastShot = 0;
+    this.invincibilityTimer = null; // NOWA: Timer do zarządzania bonusem
+
+    // UI
+    this.scene.launch('UI', { state: this.state, gameScene: this });
+  }
+
+  update(time, dt) {
+    const delta = dt / 1000;
+    if (this.state.hp <= 0) {
+      if (Phaser.Input.Keyboard.JustDown(this.keyRestart)) this.scene.restart();
+      return;
+    }
+
+    const currentCooldown = 200 / this.state.upgrades.fireRate;
+    if (this.isShooting) {
+      if (time - this.lastShotTime > currentCooldown) {
+        this.shootBullet(this.input.activePointer);
+        this.lastShotTime = time; // zapisz czas ostatniego strzału
+      }
+    }
+    // Ruch tła (mapa R->L)
+    this.bg.tilePositionX += 100 * delta;
+
+    // Sterowanie (Strzałki lub WSAD)
+    const up = this.cursors.up.isDown || this.wasds.up.isDown;
+    const down = this.cursors.down.isDown || this.wasds.down.isDown;
+    const left = this.cursors.left.isDown || this.wasds.left.isDown;
+    const right = this.cursors.right.isDown || this.wasds.right.isDown;
+
+    const accBase = 300 * this.state.upgrades.speed;
+    const turnRate = 200 * this.state.upgrades.turn;
+
+    let ax = 0, ay = 0;
+    if (up) ay -= accBase;
+    if (down) ay += accBase;
+    if (left) ax -= turnRate;
+    if (right) ax += turnRate;
+
+    // „Kołysanie” na falach i łagodne hamowanie, by czuć bezwładność
+    const sway = Math.sin(this.time.now * 0.002) * 20;
+    this.player.setAngle(sway * 0.2);
+    this.player.setAcceleration(ax, ay);
+
+    // Minimalne wygaszenie dryfu przy braku wejścia
+    if (!up && !down && !left && !right) {
+      this.player.setAcceleration(0, 0);
+      if (this.player.body.speed < 12) this.player.setVelocity(0, 0);
+    }
+
+    // Wizualny efekt nieśmiertelności (miganie)
+    if (this.state.isInvincible) {
+      this.player.alpha = (Math.floor(time / 80) % 2) ? 0.6 : 1.0;
+    } else {
+      this.player.alpha = 1.0;
+    }
+
+    // Sklep (globalny event – bez scen.get)
+    if (Phaser.Input.Keyboard.JustDown(this.keyShop)) {
+      this.game.events.emit('toggleShop');
+    }
+
+    // Skala trudności
+    this.state.timeAlive += delta;
+    this.state.difficultyTimer += delta;
+    if (this.state.difficultyTimer > 12) {
+      this.state.level++;
+      this.state.difficultyTimer = 0;
+      const newDelay = Math.max(500, this.enemyEvent.delay * 0.92);
+      this.enemyEvent.reset({ delay: newDelay, callback: this.spawnEnemy, callbackScope: this, loop: true });
+    }
+
+    // Cleanup offscreen
+    const killOff = (s) => { if (!s) return; if (s.x < -120 || s.x > W + 120 || s.y < -120 || s.y > H + 120) s.destroy(); };
+    this.crates.children.iterate(killOff);
+    this.enemies.children.iterate(killOff);
+    this.bullets.children.iterate(killOff);
+    this.enemyBullets.children.iterate(killOff);
+    this.islands.children.iterate(killOff);
+  }
+
+  // ---- Logika ----
+  shootBullet(pointer) {
+  // Jeśli nie ma kursora – użyj domyślnie kierunku w prawo
+  const target = pointer ?? this.input.activePointer;
+  if (!target || typeof target.worldX !== 'number') return;
+
+  const b = this.bullets.get(this.player.x, this.player.y, 'bullet');
+  if (!b) return;
+
+  b.setActive(true).setVisible(true);
+  b.setScale(0.8);
+  b.body.setCircle(4);
+
+  const dx = target.worldX - this.player.x;
+  const dy = target.worldY - this.player.y;
+  const angle = Math.atan2(dy, dx);
+  const speed = 500;
+
+  b.setVelocity(Math.cos(angle) * speed, Math.sin(angle) * speed);
+  b.setRotation(angle);
+}
+
+
+  spawnCrate() {
+    const y = Phaser.Math.Between(40, H - 40);
+    const crate = this.crates.create(W + 30, y, 'crate');
+    crate.setVelocity(-180, Phaser.Math.Between(-10, 10));
+    crate.setScale(.5);
+  }
+
+  spawnIsland() {
+    if (Math.random() < 0.6) {
+      const y = Phaser.Math.Between(60, H - 60);
+      const isl = this.islands.create(W + 80, y, 'island');
+      isl.body.setImmovable(true);
+      this.tweens.add({ targets: isl, x: -120, duration: Phaser.Math.Between(8000, 12000), ease: 'Linear', onComplete: () => isl.destroy() });
+    }
+  }
+
+  spawnEnemy() {
+    const y = Phaser.Math.Between(60, H - 60);
+    // Zmieniamy statek gracza na statek wroga (tekstura)
+    const e = this.enemies.create(W + 50, y, 'ship_player'); 
+    e.setScale(-1, 1); // Zmieniamy skalę na domyślną, bo tekstura wroga jest już gotowa
+    e.setDataEnabled();
+    const baseHP = 30 + this.state.level * 8;
+    e.data.set('hp', baseHP);
+    const vx = -(180 + this.state.level * 12 + Phaser.Math.Between(-20, 20));
+    e.setVelocity(vx, Phaser.Math.Between(-20, 20));
+    e.body.setSize(e.width * 0.9, e.height * 0.6, true);
+
+    this.time.addEvent({
+      delay: Phaser.Math.Between(1200, 2000), callback: () => {
+        if (!e.active) return;
+        const b = this.enemyBullets.get(e.x - 10, e.y, 'bullet');
+        if (!b) return;
+        b.setTint(0x222222);
+        b.setActive(true).setVisible(true);
+        b.body.setCircle(4);
+        this.physics.moveTo(b, this.player.x, this.player.y, 300 + this.state.level * 8);
+      }, loop: true // Dodałem pętlę dla ciągłego strzelania
+    });
+  }
+
+  collectCrate(player, crate) {
+    crate.destroy();
+    this.state.score += 10;
+    this.state.gold += 5;
+
+    // NOWE: Szansa na bonus (np. 25%)
+    if (Math.random() < 0.25) {
+      this.grantInvincibility(8); // Przyznaj 8 sekund nieśmiertelności
+    }
+
+    this.game.events.emit('updateUI');
+  }
+
+  grantInvincibility(duration) {
+    // Jeśli już aktywny, resetujemy/przedłużamy czas
+    if (this.invincibilityTimer) {
+      this.invincibilityTimer.remove(false);
+    }
+
+    this.state.isInvincible = true;
+    this.state.invincibilityDuration = duration;
+
+    // Timer odliczający co sekundę
+    this.invincibilityTimer = this.time.addEvent({
+      delay: 1000,
+      repeat: duration,
+      callback: () => {
+        this.state.invincibilityDuration--;
+        this.game.events.emit('updateUI');
+      },
+      callbackScope: this
+    });
+
+    // Event po skończeniu czasu
+    this.time.delayedCall(duration * 1000, () => {
+      this.state.isInvincible = false;
+      this.state.invincibilityDuration = 0;
+      this.invincibilityTimer = null;
+      this.game.events.emit('updateUI');
+    });
+
+    this.game.events.emit('bonusGranted', { type: 'invincibility', duration }); // Powiadom UI o bonusie
+    this.game.events.emit('updateUI');
+  }
+
+  hitEnemy(bullet, enemy) {
+    bullet.destroy();
+    const armorPierce = 1 + this.state.upgrades.fireRate * 0.15;
+    enemy.data.values.hp -= 18 * armorPierce;
+    if (enemy.data.values.hp <= 0) this.killEnemy(enemy);
+  }
+
+  killEnemy(enemy) {
+    const ex = this.add.sprite(enemy.x, enemy.y, 'expl_0');
+    this.tweens.addCounter({
+      from: 0, to: 3, duration: 240, onUpdate: (tw) => {
+        const f = Math.floor(tw.getValue());
+        ex.setTexture('expl_' + f);
+      }, onComplete: () => ex.destroy()
+    });
+    enemy.destroy();
+    this.state.score += 20;
+    this.state.gold += 8;
+    this.game.events.emit('updateUI');
+  }
+
+  hurt(dmg) {
+    if (this.state.isInvincible) return; // Zablokuj obrażenia, jeśli jest nieśmiertelny
+
+    const mitigated = Math.max(1, dmg - this.state.upgrades.armor * 2);
+    this.state.hp -= mitigated;
+    this.cameras.main.shake(80, 0.004);
+    this.game.events.emit('updateUI');
+    if (this.state.hp <= 0) this.gameOver();
+  }
+
+  gameOver() {
+    this.player.setAcceleration(0, 0);
+    this.player.setDrag(0.99);
+    this.time.removeAllEvents();
+    this.enemyEvent && this.enemyEvent.remove(false);
+    this.invincibilityTimer && this.invincibilityTimer.remove(false); // NOWE: Usuń timer bonusu
+    this.game.events.emit('gameOver');
+  }
+}
+
+// =============================
+// SCENA UI
+// =============================
+class UIScene extends Phaser.Scene {
+  constructor() { super('UI'); }
+  init(data) { this.state = data?.state; this.gameScene = data?.gameScene; }
+  create() {
+    const pad = 12;
+    this.scoreText = this.add.text(pad, pad, '', { fontSize: 18, color: '#ffd36e' }).setDepth(5).setFontFamily('Silkscreen, monospace');
+
+    // Pasek życia
+    this.hpBg = this.add.rectangle(pad, pad + 28, 220, 16, 0x222222).setOrigin(0, 0).setDepth(5);
+    this.hpBar = this.add.rectangle(pad + 2, pad + 30, 216, 12, 0x59d66f).setOrigin(0, 0).setDepth(6);
+
+    // Hinty
+    this.helpText = this.add.text(pad, pad + 52, 'Sterowanie: Strzałki/WSAD | LPM (ogień)  |  U – Sklep  |  R – Restart', { fontSize: 14, color: '#b9d3ff' }).setDepth(5).setFontFamily('Silkscreen, monospace');
+
+    // Sklep
+    this.shop = this.add.container(W - 320, pad).setDepth(1000).setVisible(false);
+    const panel = this.add.rectangle(0, 0, 300, 220, 0x0d1b2a, 0.9).setOrigin(0, 0).setStrokeStyle(2, 0x345);
+    const title = this.add.text(12, 8, 'Sklep (U zamknij)', { fontSize: 16, color: '#ffd36e' }).setFontFamily('Silkscreen, monospace');
+    this.goldText = this.add.text(12, 28, '', { fontSize: 14, color: '#fff' }).setFontFamily('Silkscreen, monospace');
+    this.shop.add([panel, title, this.goldText]);
+
+    const mkBtn = (y, label, cost, onClick) => {
+      const btn = this.add.container(12, y);
+      const bg = this.add.rectangle(0, 0, 276, 34, 0x14243a, 1).setOrigin(0, 0).setStrokeStyle(2, 0x456);
+      // Wartość początkowa ceny jest bazą, możemy ją modyfikować w zależności od poziomu ulepszenia
+      const t = this.add.text(10, 8, `${label} – ${cost} złota`, { fontSize: 14, color: '#cde1ff' }).setFontFamily('Silkscreen, monospace');
+      btn.add([bg, t]);
+      // pełny kafel jest interaktywny
+      bg.setInteractive({ useHandCursor: true })
+        .on('pointerdown', () => {
+          if (!this.state) return;
+          if (this.state.gold >= cost) {
+            this.state.gold -= cost;
+            onClick();
+            this.updateUI();
+          }
+        });
+      this.shop.add(btn);
+      return btn;
+    };
+
+    mkBtn(56, 'Szybkość (żagle) +', 25, () => this.state.upgrades.speed = +(this.state.upgrades.speed + 0.15).toFixed(2));
+    mkBtn(96, 'Sterowność (ster) +', 25, () => this.state.upgrades.turn = +(this.state.upgrades.turn + 0.15).toFixed(2));
+    mkBtn(136, 'Szybkostrzelność +', 40, () => this.state.upgrades.fireRate = +(this.state.upgrades.fireRate + 0.2).toFixed(2));
+    mkBtn(176, 'Pancerz (poszycie) +', 50, () => this.state.upgrades.armor += 1);
+
+    // NOWE: Kontener i tekst dla bonusów (Prawy Dół)
+    this.bonusContainer = this.add.container(W - 220, H - 70).setDepth(50).setVisible(false);
+    this.bonusBg = this.add.rectangle(0, 0, 200, 50, 0x5a189a, 0.8).setOrigin(0, 0).setStrokeStyle(2, 0x7b2cbf);
+    this.bonusText = this.add.text(10, 8, '', { fontSize: 16, color: '#e0c3fc' }).setFontFamily('Silkscreen, monospace');
+    this.bonusTimerText = this.add.text(10, 28, '', { fontSize: 14, color: '#fff' }).setFontFamily('Silkscreen, monospace');
+    this.bonusContainer.add([this.bonusBg, this.bonusText, this.bonusTimerText]);
+
+    // Globalne eventy z gry
+    this.game.events.on('updateUI', this.updateUI, this);
+    this.game.events.on('toggleShop', () => this.shop.setVisible(!this.shop.visible), this);
+    this.game.events.on('gameOver', this.showGameOver, this);
+    this.game.events.on('bonusGranted', this.showBonusMessage, this); // NOWE: Obsługa komunikatu o bonusie
+
+    this.updateUI();
+  }
+
+  updateUI() {
+    if (!this.state) return;
+    this.scoreText.setText(`Punkty: ${this.state.score}   Poziom: ${this.state.level}`);
+    this.goldText.setText(`Złoto: ${this.state.gold}`);
+    const hp = typeof this.state.hp === 'number' ? this.state.hp : 100;
+    const maxHp = typeof this.state.maxHp === 'number' ? this.state.maxHp : 100;
+    const ratio = Phaser.Math.Clamp(hp / maxHp, 0, 1);
+    this.hpBar.width = 216 * ratio;
+    this.hpBar.fillColor = (ratio > 0.5) ? 0x59d66f : (ratio > 0.25 ? 0xffcc66 : 0xff6b6b);
+
+    // NOWE: Aktualizacja wskaźnika nieśmiertelności
+    if (this.state.isInvincible) {
+      this.bonusTimerText.setText(`Pozostało: ${Math.max(0, this.state.invincibilityDuration)}s`);
+      this.bonusContainer.setVisible(true);
+    } else {
+      this.bonusContainer.setVisible(false);
+    }
+  }
+
+  showBonusMessage(data) {
+    if (data.type === 'invincibility') {
+      this.bonusText.setText('BONUS: Nieśmiertelność!');
+      this.bonusBg.fillColor = 0x5a189a; // Fiolet dla nieśmiertelności
+      this.bonusContainer.setVisible(true);
+    }
+    // Własny timer w updateUI zajmuje się odliczaniem
+  }
+
+  showGameOver() {
+    this.add.rectangle(W / 2, H / 2, 420, 200, 0x0d1b2a, 0.93).setDepth(20).setStrokeStyle(2, 0x456);
+    this.add.text(W / 2, H / 2 - 40, 'KONIEC REJSU', { fontSize: 28, color: '#ffd36e' }).setOrigin(0.5).setDepth(21).setFontFamily('Silkscreen, monospace');
+    this.add.text(W / 2, H / 2 + 10, `Wynik: ${this.state.score}  |  Poziom: ${this.state.level}`, { fontSize: 18, color: '#cde1ff' }).setOrigin(0.5).setDepth(21).setFontFamily('Silkscreen, monospace');
+    this.add.text(W / 2, H / 2 + 50, 'R – zagraj ponownie', { fontSize: 16, color: '#b9d3ff' }).setOrigin(0.5).setDepth(21).setFontFamily('Silkscreen, monospace');
+  }
+}
+
+// =============================
+// KONFIGURACJA I START GRY
+// =============================
+const config = {
+  type: Phaser.AUTO,
+  parent: 'game-container',
+  width: W,
+  height: H,
+  pixelArt: true,
+  roundPixels: true,
+  input: { keyboard: true, mouse: true, touch: true, gamepad: false },
+  physics: {
+    default: 'arcade',
+    arcade: { gravity: { y: 0 }, debug: false }
+  },
+  scene: [BootScene, GameScene, UIScene]
+};
+
+const game = new Phaser.Game(config);
+
+// Zapewnij fokus canvasowi (ważne dla klawiatury)
+window.addEventListener('load', () => {
+  if (game && game.canvas) {
+    game.canvas.setAttribute('tabindex', '0');
+    game.canvas.focus();
+  }
+});
