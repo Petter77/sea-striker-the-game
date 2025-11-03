@@ -74,8 +74,8 @@ class GameScene extends Phaser.Scene {
       timeAlive: 0,
       shopOpen: false,
       upgrades: { speed: 1, turn: 1, fireRate: 1, armor: 0 },
-      isInvincible: false, // NOWA: Stan nieśmiertelności
-      invincibilityDuration: 0 // NOWA: Czas trwania nieśmiertelności (w sekundach)
+      isInvincible: false,
+      invincibilityDuration: 0
     };
   }
 
@@ -83,7 +83,6 @@ class GameScene extends Phaser.Scene {
     this.input.on('pointerdown', (pointer) => {
       if (pointer.leftButtonDown()) {
         const now = this.time.now;
-        // Zmniejszamy cooldown na podstawie ulepszeń (im większy fireRate, tym mniejszy cooldown)
         const currentCooldown = 200 / this.state.upgrades.fireRate;
         if (now - this.lastShotTime > currentCooldown) {
           this.shootBullet(pointer);
@@ -137,13 +136,33 @@ class GameScene extends Phaser.Scene {
     this.physics.add.overlap(this.player, this.crates, this.collectCrate, null, this);
     this.physics.add.collider(this.player, this.islands, () => this.hurt(12), null, this);
     this.physics.add.overlap(this.bullets, this.enemies, this.hitEnemy, null, this);
-    this.physics.add.overlap(this.enemyBullets, this.player, () => this.hurt(10), null, this);
+    this.physics.add.overlap(this.enemyBullets, this.player, this.hitByBullet, null, this);
     this.physics.add.collider(this.player, this.enemies, () => this.hurt(18), null, this);
 
+    this.spawnCfg = {
+      enemy: {start: 3200, min:700},
+      crate: {start: 5200, min:2400},
+      island: {start: 6000, min:2600}
+    };
+
+    this.difficultyRampSeconds = 210;
+
+    this._lastDifficultyProgress = 0;
+
+    this._easeIn = (t) => t * t;
+
+    this._difficultyProgress = () => Phaser.Math.Clamp(this.state.timeAlive / this.difficultyRampSeconds, 0, 1);
+
     // Spawnery
-    this.time.addEvent({ delay: 1200, loop: true, callback: this.spawnCrate, callbackScope: this });
-    this.time.addEvent({ delay: 1800, loop: true, callback: this.spawnIsland, callbackScope: this });
-    this.enemyEvent = this.time.addEvent({ delay: 1500, loop: true, callback: this.spawnEnemy, callbackScope: this });
+    this.crateEvent = this.time.addEvent({
+      delay: this.spawnCfg.crate.start, loop:true, callback: this.spawnCrate, callbackScope: this
+    });
+    this.islandEvent = this.time.addEvent({
+      delay: this.spawnCfg.island.start, loop:true, callback: this.spawnIsland, callbackScope: this
+    });
+    this.enemyEvent = this.time.addEvent({
+      delay: this.spawnCfg.enemy.start, loop:true, callback: this.spawnEnemy, callbackScope: this
+    });
 
     // Timery
     this.lastShot = 0;
@@ -151,6 +170,16 @@ class GameScene extends Phaser.Scene {
 
     // UI
     this.scene.launch('UI', { state: this.state, gameScene: this });
+  }
+
+  hitByBullet(player, bullet){
+    if (!bullet?.body || !player?.body) return;
+
+    bullet.disableBody(true, true);
+
+    if(this.state.isInvincible) return;
+
+    this.hurt(12);
   }
 
   update(time, dt) {
@@ -217,6 +246,11 @@ class GameScene extends Phaser.Scene {
       const newDelay = Math.max(500, this.enemyEvent.delay * 0.92);
       this.enemyEvent.reset({ delay: newDelay, callback: this.spawnEnemy, callbackScope: this, loop: true });
     }
+    const prog = this._difficultyProgress();
+    if(prog - this._lastDifficultyProgress >= 0.05){
+      this._lastDifficultyProgress = prog;
+      this.refreshSpawnTimers();
+    }
 
     // Cleanup offscreen
     const killOff = (s) => { if (!s) return; if (s.x < -120 || s.x > W + 120 || s.y < -120 || s.y > H + 120) s.destroy(); };
@@ -248,6 +282,23 @@ class GameScene extends Phaser.Scene {
   b.setVelocity(Math.cos(angle) * speed, Math.sin(angle) * speed);
   b.setRotation(angle);
 }
+
+refreshSpawnTimers() {
+  const pRaw = this._difficultyProgress();
+  const p = this._easeIn(pRaw); // łagodny start
+
+  const lerp = (a, b, t) => a + (b - a) * t;
+
+  const enemyDelay  = Math.max( this.spawnCfg.enemy.min,  Math.floor(lerp(this.spawnCfg.enemy.start,  this.spawnCfg.enemy.min,  p)) );
+  const crateDelay  = Math.max( this.spawnCfg.crate.min,  Math.floor(lerp(this.spawnCfg.crate.start,  this.spawnCfg.crate.min,  p)) );
+  const islandDelay = Math.max( this.spawnCfg.island.min, Math.floor(lerp(this.spawnCfg.island.start, this.spawnCfg.island.min, p)) );
+
+  // Aktualizacja timerów bez ich kasowania
+  if (this.enemyEvent)  this.enemyEvent.reset({ delay: enemyDelay,  callback: this.spawnEnemy,  callbackScope: this, loop: true });
+  if (this.crateEvent)  this.crateEvent.reset({ delay: crateDelay,  callback: this.spawnCrate,  callbackScope: this, loop: true });
+  if (this.islandEvent) this.islandEvent.reset({ delay: islandDelay, callback: this.spawnIsland, callbackScope: this, loop: true });
+}
+
 
 
   spawnCrate() {
