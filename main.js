@@ -1,8 +1,8 @@
 // -----------------------------
 // USTAWIENIA EKRANU
 // -----------------------------
-const W = window.innerWidth;
-const H = window.innerHeight;
+const W = window.innerWidth - 10;
+const H = window.innerHeight - 10;
 
 // =============================
 // SCENA BOOT – GENERACJA TEKSTUR
@@ -15,6 +15,12 @@ class BootScene extends Phaser.Scene {
     this.load.image('ship_player', './grafiki/ship_2.png');
     this.load.image('crate', './grafiki/chest.png')
     this.load.image('island', './grafiki/island1.png')
+    this.load.image('template_right', './grafiki/template_right.png')
+    this.load.image('menu_background', './grafiki/menu_background2.png')
+    this.load.image('button1', './grafiki/button1.png')
+    this.load.image('button2', './grafiki/button2.png')
+    this.load.image('button3', './grafiki/button3.png')
+    this.load.image('button4', './grafiki/button4.png')
   }
   create() { this.scene.start('Game'); }
 
@@ -65,7 +71,7 @@ class GameScene extends Phaser.Scene {
   init() {
     this.state = {
       score: 0,
-      gold: 0,
+      gold: 1000,
       lives: 1,
       hp: 100,
       maxHp: 100,
@@ -73,7 +79,7 @@ class GameScene extends Phaser.Scene {
       difficultyTimer: 0,
       timeAlive: 0,
       shopOpen: false,
-      upgrades: { speed: 1, turn: 1, fireRate: 1, armor: 0 },
+      upgrades: { movement: 1.0, fireRate: 1.0, armor: 0.0, damage: 1.0 },
       isInvincible: false,
       invincibilityDuration: 0
     };
@@ -83,7 +89,7 @@ class GameScene extends Phaser.Scene {
     this.input.on('pointerdown', (pointer) => {
       if (pointer.leftButtonDown()) {
         const now = this.time.now;
-        const currentCooldown = 200 / this.state.upgrades.fireRate;
+        const currentCooldown = 800 / this.state.upgrades.fireRate;
         if (now - this.lastShotTime > currentCooldown) {
           this.shootBullet(pointer);
           this.lastShotTime = now;
@@ -96,7 +102,7 @@ class GameScene extends Phaser.Scene {
       this.isShooting = false;
     });
     this.isShooting = false;    // czy LPM jest trzymany
-    this.shootCooldown = 200;   // bazowy czas (ms)
+    this.shootCooldown = 800;   // bazowy czas (ms)
     this.lastShotTime = 0;      // znacznik czasu ostatniego strzału
 
     // Powtórzone nasłuchy są niepotrzebne, usunięto dla czystości.
@@ -174,8 +180,9 @@ class GameScene extends Phaser.Scene {
 
   hitByBullet(player, bullet){
     if (!bullet?.body || !player?.body) return;
-
-    bullet.disableBody(true, true);
+    
+    // Destroy the bullet immediately to prevent it from lingering
+    bullet.destroy();
 
     if(this.state.isInvincible) return;
 
@@ -184,12 +191,17 @@ class GameScene extends Phaser.Scene {
 
   update(time, dt) {
     const delta = dt / 1000;
+    // Globalny restart gry klawiszem R – zatrzymaj UI i zrestartuj scenę gry
+    if (Phaser.Input.Keyboard.JustDown(this.keyRestart)) {
+      this.scene.stop('UI');
+      this.scene.restart();
+      return;
+    }
     if (this.state.hp <= 0) {
-      if (Phaser.Input.Keyboard.JustDown(this.keyRestart)) this.scene.restart();
       return;
     }
 
-    const currentCooldown = 200 / this.state.upgrades.fireRate;
+    const currentCooldown = 800 / this.state.upgrades.fireRate;
     if (this.isShooting) {
       if (time - this.lastShotTime > currentCooldown) {
         this.shootBullet(this.input.activePointer);
@@ -205,8 +217,8 @@ class GameScene extends Phaser.Scene {
     const left = this.cursors.left.isDown || this.wasds.left.isDown;
     const right = this.cursors.right.isDown || this.wasds.right.isDown;
 
-    const accBase = 300 * this.state.upgrades.speed;
-    const turnRate = 200 * this.state.upgrades.turn;
+    const accBase = 300 * this.state.upgrades.movement;
+    const turnRate = 200 * this.state.upgrades.movement;
 
     let ax = 0, ay = 0;
     if (up) ay -= accBase;
@@ -232,10 +244,7 @@ class GameScene extends Phaser.Scene {
       this.player.alpha = 1.0;
     }
 
-    // Sklep (globalny event – bez scen.get)
-    if (Phaser.Input.Keyboard.JustDown(this.keyShop)) {
-      this.game.events.emit('toggleShop');
-    }
+    // Sklep – obsługa klawisza przeniesiona do UIScene, aby uniknąć utraty fokusów
 
     // Skala trudności
     this.state.timeAlive += delta;
@@ -259,6 +268,27 @@ class GameScene extends Phaser.Scene {
     this.bullets.children.iterate(killOff);
     this.enemyBullets.children.iterate(killOff);
     this.islands.children.iterate(killOff);
+
+    // Aktualizacja pasków HP przeciwników
+    this.enemies.children.iterate((enemy) => {
+      if (!enemy || !enemy.active) return;
+      const maxHp = enemy.data?.values?.maxHp ?? 1;
+      const hp = Phaser.Math.Clamp(enemy.data?.values?.hp ?? maxHp, 0, maxHp);
+      const ratio = Phaser.Math.Clamp(maxHp > 0 ? hp / maxHp : 0, 0, 1);
+      if (enemy.hpBg && enemy.hpFg) {
+        const yOffset = enemy.height * 0.6;
+        enemy.hpBg.x = enemy.x;
+        enemy.hpBg.y = enemy.y - yOffset;
+        enemy.hpFg.x = enemy.x;
+        enemy.hpFg.y = enemy.y - yOffset;
+        const fullWidth = 44 - 4; // dopasowane do barWidth - 4
+        enemy.hpFg.width = fullWidth * ratio;
+        enemy.hpFg.fillColor = (ratio > 0.5) ? 0x59d66f : (ratio > 0.25 ? 0xffcc66 : 0xff6b6b);
+        const vis = ratio < 1 && ratio > 0; // pokazuj tylko jeśli nie full i nie 0
+        enemy.hpBg.setVisible(vis);
+        enemy.hpFg.setVisible(vis);
+      }
+    });
   }
 
   // ---- Logika ----
@@ -325,9 +355,22 @@ refreshSpawnTimers() {
     e.setDataEnabled();
     const baseHP = 30 + this.state.level * 8;
     e.data.set('hp', baseHP);
+    e.data.set('maxHp', baseHP);
     const vx = -(180 + this.state.level * 12 + Phaser.Math.Between(-20, 20));
     e.setVelocity(vx, Phaser.Math.Between(-20, 20));
     e.body.setSize(e.width * 0.9, e.height * 0.6, true);
+
+    // Pasek HP nad przeciwnikiem
+    const barWidth = 44;
+    const barHeight = 5;
+    const bg = this.add.rectangle(e.x, e.y - e.height * 0.6, barWidth, barHeight, 0x1a1a1a).setOrigin(0.5, 0.5).setDepth(9);
+    const fg = this.add.rectangle(e.x, e.y - e.height * 0.6, barWidth - 4, barHeight - 2, 0x59d66f).setOrigin(0.5, 0.5).setDepth(10);
+    e.hpBg = bg;
+    e.hpFg = fg;
+    e.on('destroy', () => {
+      if (e.hpBg) e.hpBg.destroy();
+      if (e.hpFg) e.hpFg.destroy();
+    });
 
     this.time.addEvent({
       delay: Phaser.Math.Between(1200, 2000), callback: () => {
@@ -347,7 +390,15 @@ refreshSpawnTimers() {
     this.state.score += 10;
     this.state.gold += 5;
 
-    // NOWE: Szansa na bonus (np. 25%)
+    // Szansa na leczenie (10%)
+    if (Math.random() < 0.10) {
+      const healAmount = this.state.maxHp * 0.5; // 50% podstawowego zdrowia
+      this.state.hp = Math.min(this.state.hp + healAmount, this.state.maxHp);
+      // Wizualny efekt leczenia (zielony błysk)
+      this.cameras.main.flash(200, 0, 255, 0, false, null, 0.3);
+    }
+
+    // Szansa na bonus nieśmiertelności (25%)
     if (Math.random() < 0.25) {
       this.grantInvincibility(8); // Przyznaj 8 sekund nieśmiertelności
     }
@@ -390,7 +441,9 @@ refreshSpawnTimers() {
   hitEnemy(bullet, enemy) {
     bullet.destroy();
     const armorPierce = 1 + this.state.upgrades.fireRate * 0.15;
-    enemy.data.values.hp -= 18 * armorPierce;
+    const baseDamage = 9;
+    const finalDamage = baseDamage * armorPierce * this.state.upgrades.damage;
+    enemy.data.values.hp -= finalDamage;
     if (enemy.data.values.hp <= 0) this.killEnemy(enemy);
   }
 
@@ -402,6 +455,9 @@ refreshSpawnTimers() {
         ex.setTexture('expl_' + f);
       }, onComplete: () => ex.destroy()
     });
+    // Usuń pasek HP i przeciwnika
+    if (enemy.hpBg) enemy.hpBg.destroy();
+    if (enemy.hpFg) enemy.hpFg.destroy();
     enemy.destroy();
     this.state.score += 20;
     this.state.gold += 8;
@@ -436,30 +492,28 @@ class UIScene extends Phaser.Scene {
   init(data) { this.state = data?.state; this.gameScene = data?.gameScene; }
   create() {
     const pad = 12;
-    this.scoreText = this.add.text(pad, pad, '', { fontSize: 18, color: '#ffd36e' }).setDepth(5).setFontFamily('Silkscreen, monospace');
+    // Panel UI po prawej stronie ekranu
+    const rightX = W - pad;
+    this.scoreText = this.add.text(rightX, pad, '', { fontSize: 18, color: '#ffd36e' }).setOrigin(1, 0).setDepth(5).setFontFamily('Silkscreen, monospace');
+    this.goldText = this.add.text(rightX, pad + 22, '', { fontSize: 18, color: '#ffd36e' }).setOrigin(1, 0).setDepth(5).setFontFamily('Silkscreen, monospace');
 
     // Pasek życia
-    this.hpBg = this.add.rectangle(pad, pad + 28, 220, 16, 0x222222).setOrigin(0, 0).setDepth(5);
-    this.hpBar = this.add.rectangle(pad + 2, pad + 30, 216, 12, 0x59d66f).setOrigin(0, 0).setDepth(6);
+    this.hpBg = this.add.rectangle(rightX, pad + 50, 220, 16, 0x222222).setOrigin(1, 0).setDepth(5);
+    this.hpBar = this.add.rectangle(rightX - 2, pad + 52, 216, 12, 0x59d66f).setOrigin(1, 0).setDepth(6);
 
     // Hinty
-    this.helpText = this.add.text(pad, pad + 52, 'Sterowanie: Strzałki/WSAD | LPM (ogień)  |  U – Sklep  |  R – Restart', { fontSize: 14, color: '#b9d3ff' }).setDepth(5).setFontFamily('Silkscreen, monospace');
+    this.helpText = this.add.text(rightX, pad + 74, 'Sterowanie: Strzałki/WSAD | LPM (ogień)  |  U – Sklep  |  R – Restart', { fontSize: 14, color: '#b9d3ff' }).setOrigin(1, 0).setDepth(5).setFontFamily('Silkscreen, monospace');
 
-    // Sklep
-    this.shop = this.add.container(W - 320, pad).setDepth(1000).setVisible(false);
-    const panel = this.add.rectangle(0, 0, 300, 220, 0x0d1b2a, 0.9).setOrigin(0, 0).setStrokeStyle(2, 0x345);
-    const title = this.add.text(12, 8, 'Sklep (U zamknij)', { fontSize: 16, color: '#ffd36e' }).setFontFamily('Silkscreen, monospace');
-    this.goldText = this.add.text(12, 28, '', { fontSize: 14, color: '#fff' }).setFontFamily('Silkscreen, monospace');
-    this.shop.add([panel, title, this.goldText]);
+    // Sklep - grafika menu_background w lewym dolnym rogu
+    this.shop = this.add.container(-30, H).setDepth(1000).setVisible(false);
+    this.shop.setScale(1.5);
+    const bg = this.add.image(0, 0, 'menu_background').setOrigin(0, 1); // Origin (0,1) = lewy dolny róg
+    this.shop.add([bg]);
 
-    const mkBtn = (y, label, cost, onClick) => {
-      const btn = this.add.container(12, y);
-      const bg = this.add.rectangle(0, 0, 276, 34, 0x14243a, 1).setOrigin(0, 0).setStrokeStyle(2, 0x456);
-      // Wartość początkowa ceny jest bazą, możemy ją modyfikować w zależności od poziomu ulepszenia
-      const t = this.add.text(10, 8, `${label} – ${cost} złota`, { fontSize: 14, color: '#cde1ff' }).setFontFamily('Silkscreen, monospace');
-      btn.add([bg, t]);
-      // pełny kafel jest interaktywny
-      bg.setInteractive({ useHandCursor: true })
+    // Funkcja tworząca przycisk z grafiką
+    const mkBtn = (x, y, buttonImg, cost, onClick) => {
+      const btn = this.add.image(x, y, buttonImg).setOrigin(0, 0);
+      btn.setInteractive({ useHandCursor: true })
         .on('pointerdown', () => {
           if (!this.state) return;
           if (this.state.gold >= cost) {
@@ -472,23 +526,44 @@ class UIScene extends Phaser.Scene {
       return btn;
     };
 
-    mkBtn(56, 'Szybkość (żagle) +', 25, () => this.state.upgrades.speed = +(this.state.upgrades.speed + 0.15).toFixed(2));
-    mkBtn(96, 'Sterowność (ster) +', 25, () => this.state.upgrades.turn = +(this.state.upgrades.turn + 0.15).toFixed(2));
-    mkBtn(136, 'Szybkostrzelność +', 40, () => this.state.upgrades.fireRate = +(this.state.upgrades.fireRate + 0.2).toFixed(2));
-    mkBtn(176, 'Pancerz (poszycie) +', 50, () => this.state.upgrades.armor += 1);
+    // Rozmieszczenie 4 przycisków na menu_background
+    // Współrzędne do dostosowania w zależności od rozmiaru grafiki
+    const btnSpacing = 180; // Odstęp między przyciskami (3x większy: 60 * 3 = 180)
+    const btnStartY = -700; // Jeszcze wyżej od dolnej krawędzi
+    
+    mkBtn(40, btnStartY, 'button3', 25, () => this.state.upgrades.movement = +(this.state.upgrades.movement + 0.30).toFixed(2));
+    mkBtn(40, btnStartY + btnSpacing, 'button2', 40, () => this.state.upgrades.fireRate = +(this.state.upgrades.fireRate + 0.4).toFixed(2));
+    mkBtn(40, btnStartY + btnSpacing * 2, 'button4', 35, () => this.state.upgrades.damage = +(this.state.upgrades.damage + 0.25).toFixed(2));
+    mkBtn(40, btnStartY + btnSpacing * 3, 'button1', 50, () => this.state.upgrades.armor += 0.5);
 
-    // NOWE: Kontener i tekst dla bonusów (Prawy Dół)
-    this.bonusContainer = this.add.container(W - 220, H - 70).setDepth(50).setVisible(false);
-    this.bonusBg = this.add.rectangle(0, 0, 200, 50, 0x5a189a, 0.8).setOrigin(0, 0).setStrokeStyle(2, 0x7b2cbf);
-    this.bonusText = this.add.text(10, 8, '', { fontSize: 16, color: '#e0c3fc' }).setFontFamily('Silkscreen, monospace');
-    this.bonusTimerText = this.add.text(10, 28, '', { fontSize: 14, color: '#fff' }).setFontFamily('Silkscreen, monospace');
+    // NOWE: Kontener i tekst dla bonusów (Prawy Dół) – grafika template_right + Pixelify Sans
+    this.bonusContainer = this.add.container(W - 300, H - 200).setDepth(50).setVisible(false);
+    this.bonusBg = this.add.image(0, 0, 'template_right').setOrigin(0, 0);
+    // Skalowanie tła na 1.25
+    this.bonusBg.setScale(1.25);
+    // Tekst wyśrodkowany na grafice
+    this.bonusText = this.add.text(0, 0, '', { fontSize: 18, color: '#000000', fontFamily: 'Pixelify Sans, monospace' }).setOrigin(0.5, 0.5);
+    this.bonusTimerText = this.add.text(12, 28, '', { fontSize: 14, color: '#000000', fontFamily: 'Pixelify Sans, monospace' });
     this.bonusContainer.add([this.bonusBg, this.bonusText, this.bonusTimerText]);
+    
+    // Wyśrodkuj tekst na grafice (po utworzeniu, displayWidth i displayHeight uwzględniają skalę)
+    this.time.delayedCall(0, () => {
+      if (this.bonusBg && this.bonusText) {
+        this.bonusText.x = this.bonusBg.displayWidth / 2;
+        this.bonusText.y = this.bonusBg.displayHeight / 2;
+      }
+    });
 
     // Globalne eventy z gry
     this.game.events.on('updateUI', this.updateUI, this);
     this.game.events.on('toggleShop', () => this.shop.setVisible(!this.shop.visible), this);
     this.game.events.on('gameOver', this.showGameOver, this);
     this.game.events.on('bonusGranted', this.showBonusMessage, this); // NOWE: Obsługa komunikatu o bonusie
+
+    // Obsługa klawisza U bezpośrednio w UI – bardziej niezawodne (fokus, restart itp.)
+    this.input.keyboard.on('keydown-U', () => {
+      this.shop.setVisible(!this.shop.visible);
+    });
 
     this.updateUI();
   }
@@ -505,7 +580,9 @@ class UIScene extends Phaser.Scene {
 
     // NOWE: Aktualizacja wskaźnika nieśmiertelności
     if (this.state.isInvincible) {
-      this.bonusTimerText.setText(`Pozostało: ${Math.max(0, this.state.invincibilityDuration)}s`);
+      const secs = Math.max(0, this.state.invincibilityDuration);
+      this.bonusText.setText(`NIEŚMIERTELNOŚĆ: ${secs}s`);
+      this.bonusTimerText.setVisible(false);
       this.bonusContainer.setVisible(true);
     } else {
       this.bonusContainer.setVisible(false);
@@ -514,8 +591,8 @@ class UIScene extends Phaser.Scene {
 
   showBonusMessage(data) {
     if (data.type === 'invincibility') {
-      this.bonusText.setText('BONUS: Nieśmiertelność!');
-      this.bonusBg.fillColor = 0x5a189a; // Fiolet dla nieśmiertelności
+      const secs = Math.max(0, this.state?.invincibilityDuration ?? 0);
+      this.bonusText.setText(`nieśmiertelność: ${secs}s`);
       this.bonusContainer.setVisible(true);
     }
     // Własny timer w updateUI zajmuje się odliczaniem
